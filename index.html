@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikimedia AI Bot</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Babel for JSX transpilation in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        /* Apply Inter font globally */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom Scrollbar Styles for the chat history */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Loading Animation Styles */
+        .dot-pulse {
+            position: relative;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #3b82f6; /* Tailwind blue-500 */
+            color: #3b82f6;
+            animation: dotPulse 1.5s infinite ease-in-out;
+        }
+
+        .dot-pulse::before, .dot-pulse::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #3b82f6;
+            color: #3b82f6;
+            animation: dotPulse 1.5s infinite ease-in-out;
+        }
+
+        .dot-pulse::before {
+            left: -15px;
+            animation-delay: -0.3s;
+        }
+
+        .dot-pulse::after {
+            right: -15px;
+            animation-delay: 0.3s;
+        }
+
+        @keyframes dotPulse {
+            0% {
+                transform: scale(0.8);
+                opacity: 0.7;
+            }
+            50% {
+                transform: scale(1.2);
+                opacity: 1;
+            }
+            100% {
+                transform: scale(0.8);
+                opacity: 0.7;
+            }
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen bg-gray-100 font-inter text-gray-800">
+    <div id="root" class="flex-1 flex flex-col"></div>
+
+    <!-- React and ReactDOM from CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <!--
+        The React component code needs to be transpiled by Babel to correctly handle JSX syntax.
+        We use type="text/babel" to tell the browser to process this script with Babel.
+    -->
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const ReactDOM = window.ReactDOM;
+
+        // Define the unique application ID for Firestore (though not used in this non-persistent example, good practice for future expansion)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        function App() {
+            // State to store the chat history, where each item is an object {sender: 'user'/'bot', text: 'message'}
+            const [chatHistory, setChatHistory] = useState([]);
+            // State to store the current user input in the text field
+            const [userInput, setUserInput] = useState('');
+            // State to indicate if the bot is currently processing a request
+            const [isLoading, setIsLoading] = useState(false);
+            // Ref to automatically scroll the chat history to the bottom
+            const chatHistoryRef = useRef(null);
+
+            // API Key for Gemini. Leave empty, Canvas will provide it at runtime.
+            const apiKey = ""; 
+
+            // Scroll to the bottom of the chat history whenever it updates
+            useEffect(() => {
+                if (chatHistoryRef.current) {
+                    chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
+                }
+            }, [chatHistory]);
+
+            /**
+             * Calls the Gemini API to generate text based on the provided prompt.
+             * @param {string} prompt The text prompt to send to the Gemini model.
+             * @returns {Promise<string>} A promise that resolves to the generated text, or an error message.
+             */
+            const callGemini = async (prompt) => {
+                try {
+                    // Prepare the chat history for the Gemini API request
+                    const chatHistoryPayload = [{ role: "user", parts: [{ text: prompt }] }];
+                    const payload = { contents: chatHistoryPayload };
+
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    // Check if the response was successful
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(`Gemini API error: ${response.status} - ${errorData.error.message || 'Unknown error'}`);
+                    }
+
+                    const result = await response.json();
+
+                    // Extract the generated text from the response
+                    if (result.candidates && result.candidates.length > 0 &&
+                        result.candidates[0].content && result.candidates[0].content.parts &&
+                        result.candidates[0].content.parts.length > 0) {
+                        return result.candidates[0].content.parts[0].text;
+                    } else {
+                        return "I couldn't get a clear response from the AI. Please try again.";
+                    }
+                } catch (error) {
+                    console.error("Error calling Gemini API:", error);
+                    return `An error occurred while connecting to the AI: ${error.message}.`;
+                }
+            };
+
+            /**
+             * Searches Wikipedia for a given query and returns a list of matching titles.
+             * @param {string} query The search term for Wikipedia.
+             * @returns {Promise<string[]>} A promise that resolves to an array of article titles.
+             */
+            const searchWikipedia = async (query) => {
+                try {
+                    const apiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=1&origin=*`;
+                    const response = await fetch(apiUrl);
+
+                    if (!response.ok) {
+                        throw new Error(`Wikipedia API search error: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    if (data.query && data.query.search && data.query.search.length > 0) {
+                        return data.query.search.map(result => result.title);
+                    }
+                    return []; // No results found
+                } catch (error) {
+                    console.error("Error searching Wikipedia:", error);
+                    return [];
+                }
+            };
+
+            /**
+             * Fetches the summary/extract of a specific Wikipedia article title.
+             * @param {string} title The exact title of the Wikipedia article.
+             * @returns {Promise<string|null>} A promise that resolves to the article's summary, or null if not found.
+             */
+            const getWikipediaSummary = async (title) => {
+                try {
+                    const apiUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&redirects=1&titles=${encodeURIComponent(title)}&format=json&utf8=1&origin=*`;
+                    const response = await fetch(apiUrl);
+
+                    if (!response.ok) {
+                        throw new Error(`Wikipedia API summary error: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    const pages = data.query.pages;
+                    const pageId = Object.keys(pages)[0]; // Get the first (and usually only) page ID
+                    if (pageId && pages[pageId].extract) {
+                        return pages[pageId].extract;
+                    }
+                    return null; // Summary not found
+                } catch (error) {
+                    console.error("Error fetching Wikipedia summary:", error);
+                    return null;
+                }
+            };
+
+            /**
+             * Handles sending the user's message, processing it with Wikimedia and Gemini.
+             */
+            const handleSendMessage = async () => {
+                const message = userInput.trim();
+                if (!message) return;
+
+                // Add user's message to chat history
+                setChatHistory(prev => [...prev, { sender: 'user', text: message }]);
+                setUserInput(''); // Clear input field
+                setIsLoading(true); // Show loading indicator
+
+                let botResponse = "I'm sorry, I couldn't find information or process your request at this time.";
+
+                try {
+                    // Step 1: Search Wikipedia for the user's query
+                    const searchResults = await searchWikipedia(message);
+
+                    if (searchResults.length > 0) {
+                        const articleTitle = searchResults[0]; // Take the top search result
+                        const wikipediaSummary = await getWikipediaSummary(articleTitle);
+
+                        if (wikipediaSummary) {
+                            // Step 2: Construct prompt for Gemini with original query and Wikipedia summary
+                            const geminiPrompt = `User asked: "${message}". I found the following information from Wikipedia about "${articleTitle}":\n\n"${wikipediaSummary}"\n\nBased on this information, please answer the user's question concisely. If the Wikipedia information is not sufficient to fully answer, state that or elaborate with general knowledge if necessary, but prioritize the provided context.`;
+                            botResponse = await callGemini(geminiPrompt);
+                        } else {
+                            // If no summary found for the top article, try asking Gemini directly
+                            botResponse = await callGemini(`User asked: "${message}". I searched for this on Wikipedia but couldn't get a summary. Can you provide information about it?`);
+                        }
+                    } else {
+                        // If no Wikipedia search results, ask Gemini directly
+                        botResponse = await callGemini(`User asked: "${message}". I couldn't find any relevant Wikipedia articles. Can you provide information about this topic?`);
+                    }
+
+                } catch (error) {
+                    console.error("Error during bot processing:", error);
+                    botResponse = "An error occurred while processing your request. Please try again.";
+                } finally {
+                    // Add bot's response to chat history
+                    setChatHistory(prev => [...prev, { sender: 'bot', text: botResponse }]);
+                    setIsLoading(false); // Hide loading indicator
+                }
+            };
+
+            // Handle Enter key press
+            const handleKeyPress = (e) => {
+                if (e.key === 'Enter' && !isLoading) {
+                    handleSendMessage();
+                }
+            };
+
+            return (
+                <div className="flex flex-col h-screen bg-gray-100 font-inter text-gray-800">
+                    {/* Header */}
+                    <header className="bg-blue-600 text-white p-4 shadow-md rounded-b-lg">
+                        <h1 className="text-2xl font-bold text-center">
+                            MediaWiki AI Bot
+                        </h1>
+                        <p className="text-sm text-center mt-1 opacity-90">
+                            Ask me anything, powered by Wikimedia and Gemini AI!
+                        </p>
+                    </header>
+
+                    {/* Chat History */}
+                    <div
+                        ref={chatHistoryRef}
+                        className="flex-1 overflow-y-auto p-4 space-y-4 rounded-lg m-4 bg-white shadow-inner custom-scrollbar"
+                    >
+                        {chatHistory.length === 0 && (
+                            <div className="text-center text-gray-500 italic mt-10">
+                                Type a question to start the conversation...
+                            </div>
+                        )}
+                        {chatHistory.map((msg, index) => (
+                            <div
+                                key={index}
+                                className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                            >
+                                <div
+                                    className={`max-w-xl p-3 rounded-lg shadow-md ${
+                                        msg.sender === 'user'
+                                            ? 'bg-blue-500 text-white rounded-br-none'
+                                            : 'bg-gray-200 text-gray-800 rounded-bl-none'
+                                    }`}
+                                >
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                </div>
+                            </div>
+                        ))}
+                        {isLoading && (
+                            <div className="flex justify-start">
+                                <div className="max-w-xl p-3 rounded-lg shadow-md bg-gray-200 text-gray-800 rounded-bl-none">
+                                    <div className="flex items-center space-x-2">
+                                        <div className="dot-pulse"></div>
+                                        <span className="italic">Bot is thinking...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Input Area */}
+                    <div className="p-4 bg-white border-t border-gray-200 shadow-lg rounded-t-lg mx-4 mb-4 flex items-center space-x-3">
+                        <input
+                            type="text"
+                            className="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200 text-base"
+                            placeholder="Ask me something, e.g., 'Who is Alan Turing?'"
+                            value={userInput}
+                            onChange={(e) => setUserInput(e.target.value)}
+                            onKeyPress={handleKeyPress}
+                            disabled={isLoading}
+                        />
+                        <button
+                            onClick={handleSendMessage}
+                            disabled={isLoading || !userInput.trim()}
+                            className={`px-6 py-3 rounded-lg font-semibold transition duration-300 transform ${
+                                isLoading || !userInput.trim()
+                                    ? 'bg-blue-300 cursor-not-allowed'
+                                    : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
+                            }`}
+                        >
+                            Send
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render the App component into the 'root' div
+        const rootElement = document.getElementById('root');
+        if (rootElement) {
+            ReactDOM.createRoot(rootElement).render(<App />);
+        }
+    </script>
+</body>
+</html>
